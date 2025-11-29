@@ -1,136 +1,162 @@
-name: CI
+name: CI/CD Pipeline
 
 on:
-	push:
-		branches: [ main ]
-	pull_request:
-		branches: [ main ]
+  push:
+    branches: [ main ]
+  # We keep 'pull_request' here to run tests before merging, 
+  # but we prevent deployment on untrusted PR events.
+  pull_request:
+    branches: [ main ]
 
 permissions:
-	contents: read
-	packages: write
+  contents: read
+  packages: write # Required for pushing images to GHCR
 
 jobs:
-	client:
-		name: Client — Build
-		runs-on: ubuntu-latest
-		steps:
-			- name: Checkout
-				uses: actions/checkout@v4
+  # --- 1. CLIENT JOB: Build, Test, and Prepare Frontend Artifact ---
+  client:
+    name: 🎨 Client — Build and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: ⬇️ Checkout Code
+        uses: actions/checkout@v4
 
-			- name: Use Node.js
-				uses: actions/setup-node@v4
-				with:
-					node-version: '18'
+      - name: ⚙️ Use Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
 
-			- name: Cache client dependencies
-				uses: actions/cache@v4
-				with:
-					path: client/node_modules
-					key: ${{ runner.os }}-client-${{ hashFiles('client/package.json') }}
+      - name: 📦 Cache client dependencies
+        uses: actions/cache@v4
+        with:
+          path: client/node_modules
+          key: ${{ runner.os }}-client-${{ hashFiles('client/package-lock.json') }}
 
-			- name: Install dependencies (client)
-				working-directory: client
-				run: npm install
+      - name: 🛠️ Install dependencies (client)
+        working-directory: client
+        run: npm install
 
-			- name: Build client
-				working-directory: client
-				run: npm run build
+      - name: 🧪 Run client unit tests 
+        working-directory: client
+        # THIS IS THE CRUCIAL FIX: Ensures quality before proceeding.
+        run: npm test
 
-			- name: Upload client build artifact
-				uses: actions/upload-artifact@v4
-				with:
-					name: client-dist
-					path: client/dist
+      - name: 🏗️ Build client
+        working-directory: client
+        run: npm run build
 
-	server:
-		name: Server — Install
-		runs-on: ubuntu-latest
-		steps:
-			- name: Checkout
-				uses: actions/checkout@v4
+      - name: ⬆️ Upload client dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # This artifact will be used by the Dockerfile in 'build-and-push' job
+          name: client-dist
+          path: client/dist
 
-			- name: Use Node.js
-				uses: actions/setup-node@v4
-				with:
-					node-version: '18'
+  # --- 2. SERVER JOB: Install and Test Backend Artifact ---
+  server:
+    name: 💻 Server — Install and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: ⬇️ Checkout Code
+        uses: actions/checkout@v4
 
-			- name: Cache server dependencies
-				uses: actions/cache@v4
-				with:
-					path: server/node_modules
-					key: ${{ runner.os }}-server-${{ hashFiles('server/package.json') }}
+      - name: ⚙️ Use Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
 
-			- name: Install dependencies (server)
-				working-directory: server
-				run: npm install
+      - name: 📦 Cache server dependencies
+        uses: actions/cache@v4
+        with:
+          path: server/node_modules
+          key: ${{ runner.os }}-server-${{ hashFiles('server/package-lock.json') }}
 
-			- name: Quick environment check
-				working-directory: server
-				run: |
-					node -v
-					npm -v
+      - name: 🛠️ Install dependencies (server)
+        working-directory: server
+        run: npm install
 
-	build-and-push:
-		name: Build and Push Docker Images
-		runs-on: ubuntu-latest
-		needs: [client, server]
-		steps:
-			- name: Checkout
-				uses: actions/checkout@v4
+      - name: 🧪 Run server unit tests
+        working-directory: server
+        # THIS IS THE CRUCIAL FIX: Ensures quality before proceeding.
+        run: npm test
 
-			- name: Log in to GitHub Container Registry
-				uses: docker/login-action@v2
-				with:
-					registry: ghcr.io
-					username: ${{ github.actor }}
-					password: ${{ secrets.GITHUB_TOKEN }}
+  # --- 3. BUILD & PUSH JOB: Containerize and Store Artifacts ---
+  build-and-push:
+    name: 🐳 Build and Push Docker Images
+    runs-on: ubuntu-latest
+    needs: [client, server] # Waits for both client/server to pass tests/build
+    steps:
+      - name: ⬇️ Checkout Code
+        uses: actions/checkout@v4
 
-			- name: Build and push client image
-				uses: docker/build-push-action@v5
-				with:
-					context: ./client
-					file: ./client/Dockerfile
-					push: true
-					tags: |
-						ghcr.io/${{ github.repository_owner }}/vvce-client:${{ github.sha }}
-						ghcr.io/${{ github.repository_owner }}/vvce-client:latest
+      # Download the client build output needed for the client Dockerfile
+      - name: ⬇️ Download client build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: client-dist
+          path: client/dist 
 
-			- name: Build and push server image
-				uses: docker/build-push-action@v5
-				with:
-					context: ./server
-					file: ./server/Dockerfile
-					push: true
-					tags: |
-						ghcr.io/${{ github.repository_owner }}/vvce-server:${{ github.sha }}
-						ghcr.io/${{ github.repository_owner }}/vvce-server:latest
+      - name: 🔑 Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-	deploy:
-		name: Deploy to Kubernetes
-		runs-on: ubuntu-latest
-		needs: build-and-push
-		steps:
-			- name: Checkout
-				uses: actions/checkout@v4
+      - name: 🏗️ Build and push client image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./client
+          file: ./client/Dockerfile # Assumes Dockerfile is in ./client/
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/vvce-client:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/vvce-client:latest
 
-			- name: Set up kubectl
-				uses: azure/setup-kubectl@v3
+      - name: 🏗️ Build and push server image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./server
+          file: ./server/Dockerfile # Assumes Dockerfile is in ./server/
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/vvce-server:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/vvce-server:latest
 
-			- name: Configure kubeconfig
-				env:
-					KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
-				run: |
-					echo "$KUBE_CONFIG_DATA" | base64 --decode > $HOME/.kube/config
+  # --- 4. DEPLOY JOB: Apply Manifests to Kubernetes ---
+  deploy:
+    name: 🚢 Deploy to Kubernetes
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    # THIS IS THE CRUCIAL SECURITY FIX: Only deploy on push to main (after a merge), not on PR events.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' 
+    steps:
+      - name: ⬇️ Checkout Code
+        uses: actions/checkout@v4
 
-			- name: Update deployments to use pushed images
-				run: |
-					kubectl set image deployment/vvce-client vvce-client=ghcr.io/${{ github.repository_owner }}/vvce-client:${{ github.sha }} --record || true
-					kubectl set image deployment/vvce-server vvce-server=ghcr.io/${{ github.repository_owner }}/vvce-server:${{ github.sha }} --record || true
+      - name: ⚙️ Set up kubectl
+        uses: azure/setup-kubectl@v3
 
-			- name: Apply k8s manifests (create/update)
-				run: |
-					kubectl apply -f client/k8s --recursive || true
-					kubectl apply -f server/k8s --recursive || true
+      - name: 🔑 Configure kubeconfig
+        env:
+          KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+        run: |
+          # Decodes and writes the base64 Kubeconfig secret to the runner's home directory
+          echo "$KUBE_CONFIG_DATA" | base64 --decode > $HOME/.kube/config
 
+      - name: 🖼️ Update deployments to use pushed images
+        # Uses kubectl to swap out the image tags in the cluster deployment
+        run: |
+          # Use the unique commit SHA for the image tag
+          CLIENT_IMAGE_TAG="ghcr.io/${{ github.repository_owner }}/vvce-client:${{ github.sha }}"
+          SERVER_IMAGE_TAG="ghcr.io/${{ github.repository_owner }}/vvce-server:${{ github.sha }}"
 
+          kubectl set image deployment/vvce-client vvce-client=$CLIENT_IMAGE_TAG --record || true
+          kubectl set image deployment/vvce-server vvce-server=$SERVER_IMAGE_TAG --record || true
+
+      - name: 🚀 Apply k8s manifests (create/update)
+        # Applies service and ingress changes (which do not typically change often)
+        run: |
+          # Assumes k8s manifests are in 'client/k8s' and 'server/k8s'
+          kubectl apply -f client/k8s --recursive || true
+          kubectl apply -f server/k8s --recursive || true
