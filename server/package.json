@@ -1,11 +1,12 @@
 {
-  "name": "vvce-lost-found-server",
+  "name": "your-server-name",
   "version": "1.0.0",
-  "main": "server.js",
-  "type": "module",
   "scripts": {
-    "dev": "nodemon server.js"
+    "start": "node server.js",
+    "test": "echo \"No tests yet\""
   },
+  // ... other fields
+},
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.0",
