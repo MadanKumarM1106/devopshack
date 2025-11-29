@@ -8,10 +8,9 @@ on:
 
 permissions:
   contents: read
-  packages: write # Required for pushing images to GHCR
+  packages: write
 
 jobs:
-  # --- 1. CLIENT JOB: Build, Test, and Prepare Frontend Artifact ---
   client:
     name: 🎨 Client — Build and Test
     runs-on: ubuntu-latest
@@ -28,14 +27,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: client/node_modules
-          # Bump 'v2' if you want to forcibly bust cache
           key: ${{ runner.os }}-client-v2-${{ hashFiles('client/package-lock.json') }}
 
       - name: 🛠️ Install dependencies (client)
         working-directory: client
         run: npm ci
 
-      - name: 🩹 Ensure vite binary is executable # Optional, for edge-cases
+      - name: 🩹 Ensure vite binary is executable
         working-directory: client
         run: chmod +x node_modules/.bin/vite
 
@@ -53,7 +51,6 @@ jobs:
           name: client-dist
           path: client/dist
 
-  # --- 2. SERVER JOB: Install and Test Backend Artifact ---
   server:
     name: 💻 Server — Install and Test
     runs-on: ubuntu-latest
@@ -70,7 +67,6 @@ jobs:
         uses: actions/cache@v4
         with:
           path: server/node_modules
-          # Bump 'v2' for cache busting if needed
           key: ${{ runner.os }}-server-v2-${{ hashFiles('server/package-lock.json') }}
 
       - name: 🛠️ Install dependencies (server)
@@ -81,7 +77,6 @@ jobs:
         working-directory: server
         run: npm test
 
-  # --- 3. BUILD & PUSH JOB: Containerize and Store Artifacts ---
   build-and-push:
     name: 🐳 Build and Push Docker Images
     runs-on: ubuntu-latest
@@ -110,8 +105,8 @@ jobs:
           file: ./client/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/vvce-client:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/vvce-client:latest
+            ghcr.io/${{ github.repository_owner.lower }}/vvce-client:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner.lower }}/vvce-client:latest
 
       - name: 🏗️ Build and push server image
         uses: docker/build-push-action@v5
@@ -120,10 +115,9 @@ jobs:
           file: ./server/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/vvce-server:${{ github.sha }}
-            ghcr.io/${{ github.repository_owner }}/vvce-server:latest
+            ghcr.io/${{ github.repository_owner.lower }}/vvce-server:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner.lower }}/vvce-server:latest
 
-  # --- 4. DEPLOY JOB: Apply Manifests to Kubernetes ---
   deploy:
     name: 🚢 Deploy to Kubernetes
     runs-on: ubuntu-latest
@@ -144,8 +138,8 @@ jobs:
 
       - name: 🖼️ Update deployments to use pushed images
         run: |
-          CLIENT_IMAGE_TAG="ghcr.io/${{ github.repository_owner }}/vvce-client:${{ github.sha }}"
-          SERVER_IMAGE_TAG="ghcr.io/${{ github.repository_owner }}/vvce-server:${{ github.sha }}"
+          CLIENT_IMAGE_TAG="ghcr.io/${{ github.repository_owner.lower }}/vvce-client:${{ github.sha }}"
+          SERVER_IMAGE_TAG="ghcr.io/${{ github.repository_owner.lower }}/vvce-server:${{ github.sha }}"
           kubectl set image deployment/vvce-client vvce-client=$CLIENT_IMAGE_TAG --record || true
           kubectl set image deployment/vvce-server vvce-server=$SERVER_IMAGE_TAG --record || true
 
