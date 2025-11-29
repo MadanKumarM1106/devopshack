@@ -3,8 +3,6 @@ name: CI/CD Pipeline
 on:
   push:
     branches: [ main ]
-  # We keep 'pull_request' here to run tests before merging, 
-  # but we prevent deployment on untrusted PR events.
   pull_request:
     branches: [ main ]
 
@@ -30,15 +28,19 @@ jobs:
         uses: actions/cache@v4
         with:
           path: client/node_modules
-          key: ${{ runner.os }}-client-${{ hashFiles('client/package-lock.json') }}
+          # Bump 'v2' if you want to forcibly bust cache
+          key: ${{ runner.os }}-client-v2-${{ hashFiles('client/package-lock.json') }}
 
       - name: 🛠️ Install dependencies (client)
         working-directory: client
-        run: npm install
+        run: npm ci
+
+      - name: 🩹 Ensure vite binary is executable # Optional, for edge-cases
+        working-directory: client
+        run: chmod +x node_modules/.bin/vite
 
       - name: 🧪 Run client unit tests 
         working-directory: client
-        # THIS IS THE CRUCIAL FIX: Ensures quality before proceeding.
         run: npm test
 
       - name: 🏗️ Build client
@@ -48,7 +50,6 @@ jobs:
       - name: ⬆️ Upload client dist artifact
         uses: actions/upload-artifact@v4
         with:
-          # This artifact will be used by the Dockerfile in 'build-and-push' job
           name: client-dist
           path: client/dist
 
@@ -69,32 +70,31 @@ jobs:
         uses: actions/cache@v4
         with:
           path: server/node_modules
-          key: ${{ runner.os }}-server-${{ hashFiles('server/package-lock.json') }}
+          # Bump 'v2' for cache busting if needed
+          key: ${{ runner.os }}-server-v2-${{ hashFiles('server/package-lock.json') }}
 
       - name: 🛠️ Install dependencies (server)
         working-directory: server
-        run: npm install
+        run: npm ci
 
       - name: 🧪 Run server unit tests
         working-directory: server
-        # THIS IS THE CRUCIAL FIX: Ensures quality before proceeding.
         run: npm test
 
   # --- 3. BUILD & PUSH JOB: Containerize and Store Artifacts ---
   build-and-push:
     name: 🐳 Build and Push Docker Images
     runs-on: ubuntu-latest
-    needs: [client, server] # Waits for both client/server to pass tests/build
+    needs: [client, server]
     steps:
       - name: ⬇️ Checkout Code
         uses: actions/checkout@v4
 
-      # Download the client build output needed for the client Dockerfile
       - name: ⬇️ Download client build artifact
         uses: actions/download-artifact@v4
         with:
           name: client-dist
-          path: client/dist 
+          path: client/dist
 
       - name: 🔑 Log in to GitHub Container Registry
         uses: docker/login-action@v3
@@ -107,7 +107,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ./client
-          file: ./client/Dockerfile # Assumes Dockerfile is in ./client/
+          file: ./client/Dockerfile
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/vvce-client:${{ github.sha }}
@@ -117,7 +117,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ./server
-          file: ./server/Dockerfile # Assumes Dockerfile is in ./server/
+          file: ./server/Dockerfile
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/vvce-server:${{ github.sha }}
@@ -128,8 +128,7 @@ jobs:
     name: 🚢 Deploy to Kubernetes
     runs-on: ubuntu-latest
     needs: build-and-push
-    # THIS IS THE CRUCIAL SECURITY FIX: Only deploy on push to main (after a merge), not on PR events.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' 
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - name: ⬇️ Checkout Code
         uses: actions/checkout@v4
@@ -141,22 +140,16 @@ jobs:
         env:
           KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
         run: |
-          # Decodes and writes the base64 Kubeconfig secret to the runner's home directory
           echo "$KUBE_CONFIG_DATA" | base64 --decode > $HOME/.kube/config
 
       - name: 🖼️ Update deployments to use pushed images
-        # Uses kubectl to swap out the image tags in the cluster deployment
         run: |
-          # Use the unique commit SHA for the image tag
           CLIENT_IMAGE_TAG="ghcr.io/${{ github.repository_owner }}/vvce-client:${{ github.sha }}"
           SERVER_IMAGE_TAG="ghcr.io/${{ github.repository_owner }}/vvce-server:${{ github.sha }}"
-
           kubectl set image deployment/vvce-client vvce-client=$CLIENT_IMAGE_TAG --record || true
           kubectl set image deployment/vvce-server vvce-server=$SERVER_IMAGE_TAG --record || true
 
       - name: 🚀 Apply k8s manifests (create/update)
-        # Applies service and ingress changes (which do not typically change often)
         run: |
-          # Assumes k8s manifests are in 'client/k8s' and 'server/k8s'
           kubectl apply -f client/k8s --recursive || true
           kubectl apply -f server/k8s --recursive || true
