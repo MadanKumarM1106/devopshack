@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+	name: vvce-client
+	annotations:
+		nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+	rules:
+		- host: example.com  # <- replace with your host
+			http:
+				paths:
+					- path: /
+						pathType: Prefix
+						backend:
+							service:
+								name: vvce-client
+								port:
+									number: 80
+
